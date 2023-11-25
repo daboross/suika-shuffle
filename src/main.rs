@@ -9,42 +9,91 @@ use std::f32::consts::PI;
 use bevy::{
     prelude::*,
     sprite::{MaterialMesh2dBundle, Mesh2dHandle},
-    utils::{HashMap, HashSet},
 };
 use bevy_rapier2d::prelude::*;
-#[derive(Component)]
-struct Person;
-#[derive(Component)]
-struct Name(String);
 
-fn add_people(mut commands: Commands) {
-    commands.spawn((Person, Name("Elaina Proctor".to_string())));
-    commands.spawn((Person, Name("Renzo Hume".to_string())));
-    commands.spawn((Person, Name("Zayna Nieves".to_string())));
-}
 #[derive(Resource)]
-struct GreetTimer(Timer);
-impl Default for GreetTimer {
+struct PieceAvailableTimer(Timer);
+impl Default for PieceAvailableTimer {
     fn default() -> Self {
-        Self(Timer::from_seconds(2.0, TimerMode::Repeating))
+        Self(Timer::from_seconds(2.0, TimerMode::Once))
+    }
+}
+impl PieceAvailableTimer {
+    fn restart(&mut self) {
+        *self = Self::default();
     }
 }
 
-fn greet_people(time: Res<Time>, mut timer: ResMut<GreetTimer>, query: Query<&Name, With<Person>>) {
+/// Used to help identify our main camera
+#[derive(Component)]
+struct MainCamera;
+
+#[derive(Component)]
+struct Cursor;
+#[derive(Component)]
+struct ItemWaitingOnCursor;
+#[derive(Component)]
+struct ItemWaiting2nd;
+
+fn replenish_cursor(
+    time: Res<Time>,
+    mut timer: ResMut<PieceAvailableTimer>,
+    cursor: Query<Entity, With<Cursor>>,
+    mut commands: Commands,
+    assets: Res<OurAssets>,
+) {
     if timer.0.tick(time.delta()).just_finished() {
-        for name in &query {
-            println!("hello {}!", name.0);
+        for entity in &cursor {
+            println!("adding thing as child!");
+            commands
+                .spawn((
+                    nth_item(&assets, 0, Transform::default()),
+                    ItemWaitingOnCursor,
+                ))
+                .insert(RigidBody::Fixed)
+                .set_parent(entity);
         }
     }
 }
 
-pub struct HelloPlugin;
+fn spawn_items(
+    buttons: Res<Input<MouseButton>>,
+    item_waiting: Query<Entity, With<ItemWaitingOnCursor>>,
+    mut commands: Commands,
+    mut replenish_timer: ResMut<PieceAvailableTimer>,
+) {
+    if buttons.just_pressed(MouseButton::Left) {
+        println!("got left click");
+        if let Ok(item_waiting) = item_waiting.get_single() {
+            println!("found item waiting");
+            commands
+                .entity(item_waiting)
+                .remove_parent()
+                .remove::<ItemWaitingOnCursor>()
+                .insert(RigidBody::Dynamic);
+            replenish_timer.restart();
+        }
+    }
+}
 
-impl Plugin for HelloPlugin {
-    fn build(&self, app: &mut App) {
-        app.add_systems(Startup, add_people)
-            .init_resource::<GreetTimer>()
-            .add_systems(Update, greet_people);
+fn cursor_follows_cursor(
+    mut events: EventReader<CursorMoved>,
+    mut cursor: Query<&mut Transform, With<Cursor>>,
+    q_camera: Query<(&Camera, &GlobalTransform), With<MainCamera>>,
+) {
+    // see https://bevy-cheatbook.github.io/cookbook/cursor2world.html
+    let (camera, camera_transform) = q_camera.single();
+
+    for event in events.read() {
+        if let Some(world_position) = camera
+            .viewport_to_world(camera_transform, event.position)
+            .map(|ray| ray.origin.truncate())
+        {
+            for mut cursor_transform in cursor.iter_mut() {
+                cursor_transform.translation = world_position.extend(10.0);
+            }
+        }
     }
 }
 
@@ -57,7 +106,17 @@ fn main() {
             RapierDebugRenderPlugin::default(),
         ))
         .add_systems(Startup, (setup, mesh_setup))
-        .add_systems(Update, collision_events)
+        .add_systems(
+            Update,
+            (
+                collision_events,
+                cursor_follows_cursor,
+                replenish_cursor,
+                spawn_items
+                    .after(cursor_follows_cursor)
+                    .after(replenish_cursor),
+            ),
+        )
         .run();
 }
 
@@ -74,7 +133,6 @@ fn collision_events(
     assets: Res<OurAssets>,
 ) {
     for event in events.read() {
-        dbg!(event);
         if let CollisionEvent::Started(entity1, entity2, _) = *event {
             if let (Ok((merge1, pos1, merged1)), Ok((merge2, pos2, merged2))) =
                 (info.get(entity1), info.get(entity2))
@@ -129,7 +187,7 @@ impl OurAssets {
             circle_mesh: meshes.add(shape::Circle::new(50.).into()).into(),
             circle_color_material: materials.add(ColorMaterial::from(Color::PURPLE)),
             shape_meshes: (MIN_EDGES..=MAX_EDGES)
-                .filter(|n| n % 2 != 0)
+                // .filter(|n| n % 2 != 0)
                 .map(|edges| {
                     meshes
                         .add(shape::RegularPolygon::new(nth_radius(edges), edges).into())
@@ -151,7 +209,7 @@ impl OurAssets {
             .rev()
             .collect(),
             shape_colliders: (MIN_EDGES..=MAX_EDGES)
-                .filter(|n| n % 2 != 0)
+                // .filter(|n| n % 2 != 0)
                 .map(|edges| {
                     // see https://stackoverflow.com/a/7198179
                     // this should mirror the calculations done by `shape::RegularPolygon`
@@ -246,7 +304,9 @@ fn setup(
     commands.spawn(nth_item(&assets, 3, Transform::from_xyz(4.0, 1000.0, 1.0)));
     commands.insert_resource(assets);
 
-    commands.spawn(Camera2dBundle::default());
+    commands.insert_resource(PieceAvailableTimer::default());
+    commands.spawn((Cursor, TransformBundle::default()));
+    commands.spawn((Camera2dBundle::default(), MainCamera));
 
     commands
         .spawn(SpriteBundle {
