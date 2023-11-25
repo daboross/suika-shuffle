@@ -11,88 +11,124 @@ use bevy::{
     sprite::{MaterialMesh2dBundle, Mesh2dHandle},
 };
 use bevy_rapier2d::prelude::*;
+use spawning::SpawnItemsPlugin;
 
-#[derive(Resource)]
-struct PieceAvailableTimer(Timer);
-impl Default for PieceAvailableTimer {
-    fn default() -> Self {
-        Self(Timer::from_seconds(2.0, TimerMode::Once))
-    }
-}
-impl PieceAvailableTimer {
-    fn restart(&mut self) {
-        *self = Self::default();
-    }
-}
+mod spawning {
+    use bevy::{
+        prelude::*,
+        sprite::{MaterialMesh2dBundle, Mesh2dHandle},
+    };
+    use bevy_rapier2d::prelude::*;
 
-/// Used to help identify our main camera
-#[derive(Component)]
-struct MainCamera;
+    use crate::{nth_item, nth_item_display, nth_item_physics, MergeNumber, OurAssets};
 
-#[derive(Component)]
-struct Cursor;
-#[derive(Component)]
-struct ItemWaitingOnCursor;
-#[derive(Component)]
-struct ItemWaiting2nd;
+    #[derive(Resource)]
+    struct PieceAvailableTimer(Timer);
 
-fn replenish_cursor(
-    time: Res<Time>,
-    mut timer: ResMut<PieceAvailableTimer>,
-    cursor: Query<Entity, With<Cursor>>,
-    mut commands: Commands,
-    assets: Res<OurAssets>,
-) {
-    if timer.0.tick(time.delta()).just_finished() {
-        for entity in &cursor {
-            println!("adding thing as child!");
-            commands
-                .spawn((
-                    nth_item(&assets, 0, Transform::default()),
-                    ItemWaitingOnCursor,
-                ))
-                .insert(RigidBody::Fixed)
-                .set_parent(entity);
+    impl Default for PieceAvailableTimer {
+        fn default() -> Self {
+            Self(Timer::from_seconds(0.5, TimerMode::Once))
         }
     }
-}
-
-fn spawn_items(
-    buttons: Res<Input<MouseButton>>,
-    item_waiting: Query<Entity, With<ItemWaitingOnCursor>>,
-    mut commands: Commands,
-    mut replenish_timer: ResMut<PieceAvailableTimer>,
-) {
-    if buttons.just_pressed(MouseButton::Left) {
-        println!("got left click");
-        if let Ok(item_waiting) = item_waiting.get_single() {
-            println!("found item waiting");
-            commands
-                .entity(item_waiting)
-                .remove_parent()
-                .remove::<ItemWaitingOnCursor>()
-                .insert(RigidBody::Dynamic);
-            replenish_timer.restart();
+    impl PieceAvailableTimer {
+        fn restart(&mut self) {
+            *self = Self::default();
         }
     }
-}
 
-fn cursor_follows_cursor(
-    mut events: EventReader<CursorMoved>,
-    mut cursor: Query<&mut Transform, With<Cursor>>,
-    q_camera: Query<(&Camera, &GlobalTransform), With<MainCamera>>,
-) {
-    // see https://bevy-cheatbook.github.io/cookbook/cursor2world.html
-    let (camera, camera_transform) = q_camera.single();
+    #[derive(Component)]
+    struct Cursor;
+    #[derive(Component)]
+    struct ItemWaitingOnCursor;
+    #[derive(Component)]
+    struct ItemWaiting2nd;
 
-    for event in events.read() {
-        if let Some(world_position) = camera
-            .viewport_to_world(camera_transform, event.position)
-            .map(|ray| ray.origin.truncate())
-        {
-            for mut cursor_transform in cursor.iter_mut() {
-                cursor_transform.translation = world_position.extend(10.0);
+    /// Used to help identify our main camera
+    #[derive(Component)]
+    struct MainCamera;
+
+    fn replenish_cursor(
+        time: Res<Time>,
+        mut timer: ResMut<PieceAvailableTimer>,
+        cursor: Query<&Transform, With<Cursor>>,
+        mut commands: Commands,
+        assets: Res<OurAssets>,
+    ) {
+        if timer.0.tick(time.delta()).just_finished() {
+            println!("replenished");
+            if let Ok(transform) = cursor.get_single() {
+                commands
+                    .spawn((
+                        nth_item_display(&assets, 0, *transform),
+                        ItemWaitingOnCursor,
+                    ))
+                    .insert(RigidBody::Fixed);
             }
+        }
+    }
+
+    fn spawn_items(
+        buttons: Res<Input<MouseButton>>,
+        item_waiting: Query<(&MergeNumber, &Transform, Entity), With<ItemWaitingOnCursor>>,
+        mut commands: Commands,
+        mut replenish_timer: ResMut<PieceAvailableTimer>,
+        assets: Res<OurAssets>,
+    ) {
+        if buttons.just_pressed(MouseButton::Left) {
+            println!("got left click");
+            if let Ok((merge_number, transform, item_waiting)) = item_waiting.get_single() {
+                println!("found item waiting");
+                // commands
+                //     .entity(item_waiting)
+                //     .remove::<ItemWaitingOnCursor>()
+                //     .insert(nth_item_physics(&assets, merge_number.0));
+                commands.entity(item_waiting).despawn_recursive();
+                commands.spawn(nth_item(&assets, merge_number.0, *transform));
+                replenish_timer.restart();
+            }
+        }
+    }
+
+    fn cursor_follows_cursor(
+        mut events: EventReader<CursorMoved>,
+        mut cursor_items: Query<&mut Transform, Or<(With<Cursor>, With<ItemWaitingOnCursor>)>>,
+        q_camera: Query<(&Camera, &GlobalTransform), With<MainCamera>>,
+    ) {
+        // see https://bevy-cheatbook.github.io/cookbook/cursor2world.html
+        let (camera, camera_transform) = q_camera.single();
+
+        for event in events.read() {
+            if let Some(world_position) = camera
+                .viewport_to_world(camera_transform, event.position)
+                .map(|ray| ray.origin.truncate())
+            {
+                for mut cursor_transform in cursor_items.iter_mut() {
+                    cursor_transform.translation = world_position.extend(10.0);
+                }
+            }
+        }
+    }
+
+    fn populate_spawning_entities(mut commands: Commands) {
+        commands.spawn((Cursor, TransformBundle::default()));
+        commands.spawn((Camera2dBundle::default(), MainCamera));
+    }
+
+    pub struct SpawnItemsPlugin;
+    impl Plugin for SpawnItemsPlugin {
+        fn build(&self, app: &mut App) {
+            app.add_systems(Startup, populate_spawning_entities)
+                .add_systems(
+                    Update,
+                    (
+                        cursor_follows_cursor,
+                        replenish_cursor,
+                        spawn_items
+                            .after(cursor_follows_cursor)
+                            .after(replenish_cursor),
+                    ),
+                )
+                .insert_resource(PieceAvailableTimer::default());
         }
     }
 }
@@ -101,22 +137,13 @@ fn main() {
     App::new()
         .add_plugins((
             DefaultPlugins,
+            SpawnItemsPlugin,
             RapierPhysicsPlugin::<NoUserData>::pixels_per_meter(10.0),
             #[cfg(feature = "rapier-debug-render")]
             RapierDebugRenderPlugin::default(),
         ))
-        .add_systems(Startup, (setup, mesh_setup))
-        .add_systems(
-            Update,
-            (
-                collision_events,
-                cursor_follows_cursor,
-                replenish_cursor,
-                spawn_items
-                    .after(cursor_follows_cursor)
-                    .after(replenish_cursor),
-            ),
-        )
+        .add_systems(Startup, (setup,))
+        .add_systems(Update, (collision_events,))
         .run();
 }
 
@@ -128,16 +155,18 @@ struct Merged(bool);
 
 fn collision_events(
     mut events: EventReader<CollisionEvent>,
-    info: Query<(&MergeNumber, &Transform, &Merged)>,
+    mut info: Query<(&MergeNumber, &Transform, &mut Merged)>,
     mut commands: Commands,
     assets: Res<OurAssets>,
 ) {
     for event in events.read() {
         if let CollisionEvent::Started(entity1, entity2, _) = *event {
+            let mut merged = false;
             if let (Ok((merge1, pos1, merged1)), Ok((merge2, pos2, merged2))) =
                 (info.get(entity1), info.get(entity2))
             {
                 if merge1.0 == merge2.0 && !merged1.0 && !merged2.0 {
+                    merged = true;
                     commands.entity(entity1).despawn_recursive();
                     commands.entity(entity2).despawn_recursive();
                     if merge1.0 + 1 < UPGRADE_NUM {
@@ -152,14 +181,16 @@ fn collision_events(
                     }
                 }
             }
+            if merged {
+                info.get_mut(entity1).unwrap().2 .0 = true;
+                info.get_mut(entity2).unwrap().2 .0 = true;
+            }
         }
     }
 }
 
 #[derive(Resource, Clone)]
 struct OurAssets {
-    circle_mesh: Mesh2dHandle,
-    circle_color_material: Handle<ColorMaterial>,
     shape_meshes: Vec<Mesh2dHandle>,
     shape_colors: Vec<Handle<ColorMaterial>>,
     shape_colliders: Vec<Collider>,
@@ -184,8 +215,6 @@ fn nth_behaves() {
 impl OurAssets {
     fn init(meshes: &mut Assets<Mesh>, materials: &mut Assets<ColorMaterial>) -> Self {
         OurAssets {
-            circle_mesh: meshes.add(shape::Circle::new(50.).into()).into(),
-            circle_color_material: materials.add(ColorMaterial::from(Color::PURPLE)),
             shape_meshes: (MIN_EDGES..=MAX_EDGES)
                 // .filter(|n| n % 2 != 0)
                 .map(|edges| {
@@ -230,20 +259,6 @@ impl OurAssets {
     }
 }
 
-fn mesh_setup(
-    mut commands: Commands,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<ColorMaterial>>,
-) {
-    // // Hexagon
-    // commands.spawn(MaterialMesh2dBundle {
-    //     mesh: meshes.add(shape::RegularPolygon::new(50., 7).into()).into(),
-    //     material: materials.add(ColorMaterial::from(Color::TURQUOISE)),
-    //     transform: Transform::from_translation(Vec3::new(150., 0., 0.)),
-    //     ..default()
-    // });
-}
-
 fn piece_physics() -> impl Bundle {
     (
         RigidBody::Dynamic,
@@ -256,40 +271,31 @@ fn piece_physics() -> impl Bundle {
     )
 }
 
-fn circle(m: &OurAssets, transform: Transform) -> impl Bundle {
+fn nth_item_display(assets: &OurAssets, n: usize, transform: Transform) -> impl Bundle {
     (
         MaterialMesh2dBundle {
-            mesh: m.circle_mesh.clone(),
-            material: m.circle_color_material.clone(),
+            mesh: assets.shape_meshes[n].clone(),
+            material: assets.shape_colors[n].clone(),
             transform,
             ..default()
         },
-        Collider::ball(50.0),
-        piece_physics(),
+        MergeNumber(n.try_into().unwrap()),
     )
 }
-
-struct ItemBundle {}
-
-fn nth_item(m: &OurAssets, n: usize, transform: Transform) -> impl Bundle {
+fn nth_item_physics(assets: &OurAssets, n: usize) -> impl Bundle {
     (
-        MaterialMesh2dBundle {
-            mesh: m.shape_meshes[n].clone(),
-            material: m.shape_colors[n].clone(),
-            transform,
-            ..default()
-        },
-        m.shape_colliders[n].clone(),
-        CollidingEntities::default(),
+        assets.shape_colliders[n].clone(),
         piece_physics(),
         Merged(false),
-        MergeNumber(n.try_into().unwrap()),
         ActiveEvents::COLLISION_EVENTS,
     )
 }
 
-fn system_which_spawns(mut commands: Commands, m: Res<OurAssets>) {
-    commands.spawn(circle(&m, Transform::from_xyz(0.0, 200.0, 1.0)));
+fn nth_item(assets: &OurAssets, n: usize, transform: Transform) -> impl Bundle {
+    (
+        nth_item_display(assets, n, transform),
+        nth_item_physics(assets, n),
+    )
 }
 
 fn setup(
@@ -303,10 +309,6 @@ fn setup(
     commands.spawn(nth_item(&assets, 0, Transform::from_xyz(4.0, 600.0, 1.0)));
     commands.spawn(nth_item(&assets, 3, Transform::from_xyz(4.0, 1000.0, 1.0)));
     commands.insert_resource(assets);
-
-    commands.insert_resource(PieceAvailableTimer::default());
-    commands.spawn((Cursor, TransformBundle::default()));
-    commands.spawn((Camera2dBundle::default(), MainCamera));
 
     commands
         .spawn(SpriteBundle {
@@ -335,25 +337,4 @@ fn setup(
             .insert(TransformBundle::from(Transform::from_xyz(x, 0.0, 0.0)))
             .insert(Restitution::coefficient(-0.5));
     }
-
-    // Rectangle
-    commands.spawn(SpriteBundle {
-        sprite: Sprite {
-            color: Color::rgb(0.25, 0.25, 0.75),
-            custom_size: Some(Vec2::new(50.0, 100.0)),
-            ..default()
-        },
-        transform: Transform::from_translation(Vec3::new(-50., 0., 0.)),
-        ..default()
-    });
-
-    // Quad
-    commands.spawn(MaterialMesh2dBundle {
-        mesh: meshes
-            .add(shape::Quad::new(Vec2::new(50., 100.)).into())
-            .into(),
-        material: materials.add(ColorMaterial::from(Color::LIME_GREEN)),
-        transform: Transform::from_translation(Vec3::new(50., 0., 0.)),
-        ..default()
-    });
 }
