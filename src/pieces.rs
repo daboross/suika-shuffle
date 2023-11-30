@@ -10,7 +10,7 @@ const MIN_RADIUS: f32 = 20.0;
 const MAX_RADIUS: f32 = 200.0;
 const MIN_EDGES: usize = 3;
 const MAX_EDGES: usize = MIN_EDGES + UPGRADE_NUM;
-const UPGRADE_NUM: usize = 6;
+const UPGRADE_NUM: usize = 13;
 
 #[derive(Component, Debug)]
 pub struct Piece {
@@ -24,7 +24,7 @@ pub struct PieceMerged(bool);
 pub struct PieceAssets {
     shape_meshes: Vec<Mesh2dHandle>,
     shape_colors: Vec<Handle<ColorMaterial>>,
-    shape_colliders: Vec<Collider>,
+    pub shape_colliders: Vec<Collider>,
 }
 
 impl PieceAssets {
@@ -49,8 +49,10 @@ impl PieceAssets {
                 Color::ANTIQUE_WHITE,
             ]
             .into_iter()
-            .map(|c| materials.add(ColorMaterial::from(c)))
             .rev()
+            .cycle()
+            .map(|c| materials.add(ColorMaterial::from(c)))
+            .take(UPGRADE_NUM)
             .collect(),
             shape_colliders: (MIN_EDGES..=MAX_EDGES)
                 // .filter(|n| n % 2 != 0)

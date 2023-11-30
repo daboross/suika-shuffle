@@ -1,6 +1,15 @@
-use bevy::prelude::*;
+use bevy::{prelude::*, window::PrimaryWindow};
+use bevy_rapier2d::geometry::Collider;
+use rand::prelude::*;
+use rand_pcg::Pcg64;
 
-use crate::items::{nth_piece, nth_piece_display, Piece, PieceAssets};
+use crate::{
+    pieces::{nth_piece, nth_piece_display, Piece, PieceAssets},
+    MainCamera, BOARD_BOTTOM_Y, BOARD_HEIGHT, BOARD_WIDTH,
+};
+
+const SPAWN_Y: f32 = BOARD_BOTTOM_Y + BOARD_HEIGHT;
+const CURSOR_Z: f32 = 15.0;
 
 #[derive(Resource)]
 struct PieceAvailableTimer(Timer);
@@ -19,13 +28,43 @@ impl PieceAvailableTimer {
 #[derive(Component)]
 struct Cursor;
 #[derive(Component)]
-struct ItemWaitingOnCursor;
+struct PieceWaitingOnCursor;
 #[derive(Component)]
 struct ItemWaiting2nd;
 
-/// Used to help identify our main camera
-#[derive(Component)]
-struct MainCamera;
+#[derive(Resource)]
+struct GameRand(rand_pcg::Pcg64);
+
+#[derive(Component, Debug)]
+struct PieceWidth {
+    left: f32,
+    right: f32,
+}
+
+impl PieceWidth {
+    fn from_collider(c: &Collider) -> Self {
+        PieceWidth {
+            left: c
+                .project_point(Vec2::ZERO, 0.0, Vec2 { x: 1000.0, y: 0.0 }, true)
+                .point
+                .x,
+            right: c
+                .project_point(Vec2::ZERO, 0.0, Vec2 { x: -1000.0, y: 0.0 }, true)
+                .point
+                .x,
+        }
+    }
+    fn clamp(&self, t: Vec3) -> Vec3 {
+        Vec3 {
+            x: t.x.clamp(
+                -BOARD_WIDTH / 2.0 + self.left,
+                BOARD_WIDTH / 2.0 + self.right,
+            ),
+            y: t.y,
+            z: t.z,
+        }
+    }
+}
 
 fn replenish_cursor(
     time: Res<Time>,
@@ -35,8 +74,9 @@ fn replenish_cursor(
     second_entity: Query<Entity, With<ItemWaiting2nd>>,
     mut commands: Commands,
     assets: Res<PieceAssets>,
+    mut rand: ResMut<GameRand>,
 ) {
-    if let Ok(transform) = cursor.get_single() {
+    if let Ok(mut transform) = cursor.get_single().cloned() {
         if timer.0.tick(time.delta()).just_finished() {
             log::debug!("replenished cursor");
             let second_rank = match second_piece.get_single() {
@@ -46,15 +86,19 @@ fn replenish_cursor(
             for e in second_entity.iter() {
                 commands.entity(e).despawn_recursive();
             }
+            let width = PieceWidth::from_collider(&assets.shape_colliders[second_rank]);
+            transform.translation = width.clamp(transform.translation);
+            transform.translation.y = SPAWN_Y;
             commands.spawn((
-                nth_piece_display(&assets, second_rank, *transform),
-                ItemWaitingOnCursor,
+                nth_piece_display(&assets, second_rank, transform),
+                width,
+                PieceWaitingOnCursor,
             ));
             commands.spawn((
                 nth_piece_display(
                     &assets,
-                    second_rank,
-                    Transform::from_translation(Vec3::new(300.0, 300.0, 0.0)),
+                    rand.0.gen_range(0..=4),
+                    Transform::from_translation(Vec3::new(BOARD_WIDTH / 2.0 + 80.0, 300.0, 1.0)),
                 ),
                 ItemWaiting2nd,
             ));
@@ -64,7 +108,7 @@ fn replenish_cursor(
 
 fn spawn_items(
     buttons: Res<Input<MouseButton>>,
-    item_waiting: Query<(&Piece, &Transform, Entity), With<ItemWaitingOnCursor>>,
+    item_waiting: Query<(&Piece, &Transform, Entity), With<PieceWaitingOnCursor>>,
     mut commands: Commands,
     mut replenish_timer: ResMut<PieceAvailableTimer>,
     assets: Res<PieceAssets>,
@@ -82,7 +126,10 @@ fn spawn_items(
 
 fn cursor_follows_cursor(
     mut events: EventReader<CursorMoved>,
-    mut cursor_items: Query<&mut Transform, Or<(With<Cursor>, With<ItemWaitingOnCursor>)>>,
+    mut cursor_items: Query<
+        (&mut Transform, Option<&PieceWidth>),
+        Or<(With<Cursor>, With<PieceWaitingOnCursor>)>,
+    >,
     q_camera: Query<(&Camera, &GlobalTransform), With<MainCamera>>,
 ) {
     // see https://bevy-cheatbook.github.io/cookbook/cursor2world.html
@@ -93,17 +140,38 @@ fn cursor_follows_cursor(
             .viewport_to_world(camera_transform, event.position)
             .map(|ray| ray.origin.truncate())
         {
-            for mut cursor_transform in cursor_items.iter_mut() {
-                cursor_transform.translation = world_position.extend(10.0);
-                cursor_transform.translation.y = 275.0;
+            log::debug!("new mouse position: {:?}", world_position);
+            let position = Vec3 {
+                x: world_position
+                    .x
+                    .clamp(-BOARD_WIDTH / 2.0, BOARD_WIDTH / 2.0),
+                y: SPAWN_Y,
+                z: CURSOR_Z,
+            };
+            for (mut cursor_transform, width) in cursor_items.iter_mut() {
+                cursor_transform.translation = position;
+
+                if let Some(w) = width {
+                    log::debug!("width: {w:?}");
+                    cursor_transform.translation.x = cursor_transform
+                        .translation
+                        .x
+                        .clamp(-BOARD_WIDTH / 2.0 + w.left, BOARD_WIDTH / 2.0 + w.right);
+                }
             }
         }
     }
 }
 
 fn populate_spawning_entities(mut commands: Commands) {
-    commands.spawn((Cursor, TransformBundle::default()));
-    commands.spawn((Camera2dBundle::default(), MainCamera));
+    commands.spawn((
+        Cursor,
+        TransformBundle::from_transform(Transform::from_translation(Vec3 {
+            x: 0.0,
+            y: SPAWN_Y,
+            z: CURSOR_Z,
+        })),
+    ));
 }
 
 pub struct PieceSpawnPlugin;
@@ -120,6 +188,7 @@ impl Plugin for PieceSpawnPlugin {
                         .after(replenish_cursor),
                 ),
             )
-            .insert_resource(PieceAvailableTimer::default());
+            .insert_resource(PieceAvailableTimer::default())
+            .insert_resource(GameRand(Pcg64::seed_from_u64(0)));
     }
 }
