@@ -45,7 +45,10 @@ fn setup_board(mut commands: Commands) {
             projection: OrthographicProjection {
                 far: 1000.,
                 near: -1000.,
-                scaling_mode: ScalingMode::FixedVertical(1000.0),
+                scaling_mode: ScalingMode::AutoMin {
+                    min_width: BOARD_WIDTH * 1.2,
+                    min_height: SCREEN_HEIGHT,
+                },
                 ..default()
             },
             ..default()

@@ -1,4 +1,4 @@
-use bevy::{prelude::*, window::PrimaryWindow};
+use bevy::prelude::*;
 use bevy_rapier2d::geometry::Collider;
 use rand::prelude::*;
 use rand_pcg::Pcg64;
@@ -10,13 +10,14 @@ use crate::{
 
 const SPAWN_Y: f32 = BOARD_BOTTOM_Y + BOARD_HEIGHT;
 const CURSOR_Z: f32 = 15.0;
+const PIECE_Z: f32 = 5.0;
 
 #[derive(Resource)]
 struct PieceAvailableTimer(Timer);
 
 impl Default for PieceAvailableTimer {
     fn default() -> Self {
-        Self(Timer::from_seconds(0.5, TimerMode::Once))
+        Self(Timer::from_seconds(0.01, TimerMode::Once))
     }
 }
 impl PieceAvailableTimer {
@@ -98,7 +99,11 @@ fn replenish_cursor(
                 nth_piece_display(
                     &assets,
                     rand.0.gen_range(0..=4),
-                    Transform::from_translation(Vec3::new(BOARD_WIDTH / 2.0 + 80.0, 300.0, 1.0)),
+                    Transform::from_translation(Vec3::new(
+                        BOARD_WIDTH / 2.0 + 80.0,
+                        SPAWN_Y - 100.0,
+                        CURSOR_Z + 1.0,
+                    )),
                 ),
                 ItemWaiting2nd,
             ));
@@ -118,7 +123,9 @@ fn spawn_items(
         if let Ok((piece, transform, item_waiting)) = item_waiting.get_single() {
             log::debug!("spawning!");
             commands.entity(item_waiting).despawn_recursive();
-            commands.spawn(nth_piece(&assets, piece.rank, *transform));
+            let mut transform = *transform;
+            transform.translation.z = PIECE_Z;
+            commands.spawn(nth_piece(&assets, piece.rank, transform));
             replenish_timer.restart();
         }
     }
