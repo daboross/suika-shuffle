@@ -28,6 +28,14 @@ struct MainCamera;
 fn main() {
     App::new()
         .add_systems(Startup, setup_board)
+        .insert_resource(RapierConfiguration {
+            timestep_mode: TimestepMode::Interpolated {
+                dt: 1.0 / 60.0,
+                substeps: 1,
+                time_scale: 1.0,
+            },
+            ..default()
+        })
         .add_plugins((
             DefaultPlugins,
             RapierPhysicsPlugin::<NoUserData>::pixels_per_meter(10.0),
